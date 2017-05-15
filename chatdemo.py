@@ -35,9 +35,9 @@ define("port", default=8888, help="run on the given port", type=int)
 class Application(tornado.web.Application):
     def __init__(self):
         handlers = [
-            (r"/", RoomHandler),
+            (r"/index", RoomHandler),
             (r"/room", MainHandler),
-            (r"/chatsocket", ChatSocketHandler),
+            (r"/", ChatSocketHandler),
         ]
         settings = dict(
             cookie_secret="__TODO:_GENERATE_YOUR_OWN_RANDOM_VALUE_HERE__",
