@@ -1,0 +1,17 @@
+2017-05-09 17:17:32,397 CRIT Supervisor running as root (no user in config file)
+2017-05-09 17:17:32,434 INFO daemonizing the supervisord process
+2017-05-09 17:17:32,435 INFO supervisord started with pid 15066
+2017-05-09 17:17:33,438 INFO spawned: 'chat_server' with pid 15067
+2017-05-09 17:17:33,565 INFO exited: chat_server (exit status 1; not expected)
+2017-05-09 17:17:34,569 INFO spawned: 'chat_server' with pid 15070
+2017-05-09 17:17:34,700 INFO exited: chat_server (exit status 1; not expected)
+2017-05-09 17:17:36,704 INFO spawned: 'chat_server' with pid 15073
+2017-05-09 17:17:36,835 INFO exited: chat_server (exit status 1; not expected)
+2017-05-09 17:17:39,841 INFO spawned: 'chat_server' with pid 15077
+2017-05-09 17:17:39,969 INFO exited: chat_server (exit status 1; not expected)
+2017-05-09 17:17:40,971 INFO gave up: chat_server entered FATAL state, too many start retries too quickly
+2017-05-09 17:29:06,711 CRIT Supervisor running as root (no user in config file)
+2017-05-09 17:29:06,714 INFO daemonizing the supervisord process
+2017-05-09 17:29:06,715 INFO supervisord started with pid 15533
+2017-05-09 17:29:07,717 INFO spawned: 'chat_server' with pid 15535
+2017-05-09 17:29:08,719 INFO success: chat_server entered RUNNING state, process has stayed up for > than 1 seconds (startsecs)

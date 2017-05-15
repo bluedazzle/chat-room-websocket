@@ -105,7 +105,7 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
         ChatSocketHandler.rooms['new']['waiters'].remove(self)
 
     def on_message(self, message):
-        logging.info("got message %r", message)
+        print "got message {0}".format(message)
         parsed = tornado.escape.json_decode(message)
         chat = {
             "id": str(uuid.uuid4()),
