@@ -50,7 +50,7 @@ var updater = {
     socket: null,
 
     start: function() {
-        var url = "ws://" + location.host + "/chatsocket";
+        var url = "ws://" + location.host;
         var data = {room: $("#room").val(),
                     type: 1,
                     body: ''};
