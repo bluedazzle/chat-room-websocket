@@ -17,7 +17,7 @@
 
 Authentication, error handling, etc are left as an exercise for the reader :)
 """
-
+import time
 import logging
 import tornado.escape
 import tornado.ioloop
@@ -105,11 +105,12 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
         ChatSocketHandler.rooms['new']['waiters'].remove(self)
 
     def on_message(self, message):
-        print "got message {0}".format(message)
+        print "got message {0}".format(message.encode('utf-8'))
         parsed = tornado.escape.json_decode(message)
         chat = {
             "id": str(uuid.uuid4()),
             "body": parsed["body"],
+	    "timestamp": str(time.time()),
         }
         chat["html"] = tornado.escape.to_basestring(
             self.render_string("message.html", message=chat))
