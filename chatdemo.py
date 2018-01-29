@@ -17,6 +17,7 @@
 
 Authentication, error handling, etc are left as an exercise for the reader :)
 """
+import json
 import time
 import logging
 import tornado.escape
@@ -105,7 +106,7 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
         ChatSocketHandler.rooms['new']['waiters'].remove(self)
 
     def on_message(self, message):
-        print "got message {0}".format(message.encode('utf-8'))
+        # print "got message {0}".format(message.encode('utf-8'))
         parsed = tornado.escape.json_decode(message)
         chat = {
             "id": str(uuid.uuid4()),
@@ -118,6 +119,8 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
         send_type = parsed.get("type", 0)
         if send_type == 1:
             self.distribute_room(room)
+        elif send_type == 2:
+            self.write_message(json.dumps({'body': 'pong'}))
         else:
             ChatSocketHandler.update_cache(chat, room)
             ChatSocketHandler.send_updates(chat, room)
