@@ -30,6 +30,8 @@ import uuid
 
 from tornado.options import define, options
 
+from models import session, User
+
 define("port", default=8888, help="run on the given port", type=int)
 
 
@@ -111,15 +113,20 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
         chat = {
             "id": str(uuid.uuid4()),
             "body": parsed["body"],
-	    "timestamp": str(time.time()),
+            "timestamp": str(time.time()),
         }
         chat["html"] = tornado.escape.to_basestring(
             self.render_string("message.html", message=chat))
         room = parsed.get("room")
         send_type = parsed.get("type", 0)
+        token = parsed.get("token", '')
         if send_type == 1:
             self.distribute_room(room)
         elif send_type == 2:
+            user = session.query(User).filter(User.token == token).first()
+            if user:
+                user.active = True
+                session.commit()
             self.write_message(json.dumps({'body': 'pong'}))
         else:
             ChatSocketHandler.update_cache(chat, room)
