@@ -82,7 +82,8 @@ class ChatCenter(object):
             except Exception as e:
                 logger.error("ERROR IN sending message: {0}, reason {1}".format(message, e))
         end = time.time()
-        logging.info("Send message to {0} waiters, cost {1}s".format(len(self.chatRegister[home]), (end - start) * 1000.0))
+        logging.info("Send message to {0} waiters, cost {1}s message: {2}".format(len(self.chatRegister[home]),
+                                                                                  (end - start) * 1000.0, message))
 
     def generate_new_room(self, room):
         if room not in self.chatRegister:
