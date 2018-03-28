@@ -1,25 +1,9 @@
 #!/usr/bin/env python
-#
-# Copyright 2009 Facebook
-#
-# Licensed under the Apache License, Version 2.0 (the "License"); you may
-# not use this file except in compliance with the License. You may obtain
-# a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations
-# under the License.
-"""Simplified chat demo for websockets.
+# coding: utf-8
+from __future__ import unicode_literals
 
-Authentication, error handling, etc are left as an exercise for the reader :)
-"""
 import json
 import time
-import logging
 import tornado.escape
 import tornado.ioloop
 import tornado.options
@@ -27,6 +11,9 @@ import tornado.web
 import tornado.websocket
 import os.path
 import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 
 from tornado.options import define, options
 
@@ -35,8 +22,84 @@ from models import session, User
 define("port", default=8888, help="run on the given port", type=int)
 
 
+class ChatCenter(object):
+    '''
+        处理websocket 服务器与客户端交互
+    '''
+    newer = 'newer'
+    chatRegister = {'newer': set()}
+
+    def register(self, newer):
+        '''
+            保存新加入的客户端连接、监听实例，并向聊天室其他成员发送消息！
+        '''
+        self.chatRegister[self.newer].add(newer)
+        logger.info('INFO new socket connecting')
+
+    def unregister(self, lefter):
+        '''
+            客户端关闭连接，删除聊天室内对应的客户端连接实例
+        '''
+        room = lefter.room_id
+        self.chatRegister[room].remove(lefter)
+        logger.info('INFO socket close from room {0}'.format(room))
+
+    def callbackNews(self, sender, message):
+        '''
+            处理客户端提交的消息，发送给对应聊天室内所有的客户端
+        '''
+        parsed = tornado.escape.json_decode(message)
+        chat = {
+            "id": str(uuid.uuid4()),
+            "body": parsed["body"],
+            "timestamp": str(time.time()),
+        }
+        # chat["html"] = tornado.escape.to_basestring(
+        #     self.render_string("message.html", message=chat))
+        room = parsed.get("room")
+        send_type = parsed.get("type", 0)
+        # token = parsed.get("token", '')
+        if send_type == 1:
+            self.distribute_room(room, sender)
+            logger.info('INFO socket enter room {0}'.format(room))
+        elif send_type == 2:
+            # user = session.query(User).filter(User.token == token).first()
+            # if user:
+            #     user.active = True
+            #     session.commit()
+            sender.write_message(json.dumps({'body': 'pong'}))
+        else:
+            self.callbackTrigger(room, chat)
+
+    def callbackTrigger(self, home, message):
+        '''
+            消息触发器，将最新消息返回给对应聊天室的所有成员
+        '''
+        start = time.time()
+        for callbacker in self.chatRegister[home]:
+            try:
+                callbacker.write_message(json.dumps(message))
+            except Exception as e:
+                logger.error("ERROR IN sending message: {0}, reason {1}".format(message, e))
+        end = time.time()
+        logging.info("Send message to {0} waiters, cost {1}s".format(len(self.chatRegister[home]), (end - start) * 1000.0))
+
+    def generate_new_room(self, room):
+        if room not in self.chatRegister:
+            self.chatRegister[room] = set()
+        return True
+
+    def distribute_room(self, room, sender):
+        self.generate_new_room(room)
+        sender.room_id = room
+        self.chatRegister[room].add(sender)
+        self.chatRegister[self.newer].remove(sender)
+
+
 class Application(tornado.web.Application):
     def __init__(self):
+        self.chat_center = ChatCenter()
+
         handlers = [
             (r"/index", RoomHandler),
             (r"/room", MainHandler),
@@ -64,73 +127,34 @@ class MainHandler(tornado.web.RequestHandler):
 
 
 class ChatSocketHandler(tornado.websocket.WebSocketHandler):
-    rooms = {'new': {'waiters': set()}}
-    socket_room_dict = {}
-    cache_size = 200
+    def __init__(self, application, request, **kwargs):
+        self.room_id = None
+        super(ChatSocketHandler, self).__init__(application, request, **kwargs)
+
+    def open(self):
+        # try:
+        self.application.chat_center.register(self)  # 记录客户端连接
+        # except Exception as e:
+        #     logger.error('ERROR IN init web socket , reason {0}'.format(e))
+        #     raise e
+
+    def on_close(self):
+        try:
+            self.application.chat_center.unregister(self)  # 删除客户端连接
+        except Exception as e:
+            logger.error('ERROR IN close web socket, reason {0}'.format(e))
+            raise e
+
+    def on_message(self, message):
+        # try:
+        self.application.chat_center.callbackNews(self, message)  # 处理客户端提交的最新消息
+        # except Exception as e:
+        #     logger.error('ERROR IN new message coming, message {0}, reason {1}'.format(message, e))
+        #     raise e
 
     def get_compression_options(self):
         # Non-None enables compression with default options.
         return {}
-
-    def generate_new_room(self, room):
-        if room not in ChatSocketHandler.rooms:
-            ChatSocketHandler.rooms[room] = {'cache': [],
-                                             'waiters': set()}
-        return True
-
-    def open(self):
-        ChatSocketHandler.rooms['new']['waiters'].add(self)
-
-    def on_close(self):
-        room = ChatSocketHandler.socket_room_dict[self]
-        ChatSocketHandler.rooms[room]['waiters'].remove(self)
-
-    @classmethod
-    def update_cache(cls, chat, room):
-        cache = cls.rooms[room]['cache']
-        cache.append(chat)
-        if len(cache) > cls.cache_size:
-            cache = cache[-cls.cache_size:]
-
-    @classmethod
-    def send_updates(cls, chat, room):
-        logging.info("sending message to %d waiters", len(cls.rooms[room]['waiters']))
-        for waiter in cls.rooms[room]['waiters']:
-            try:
-                waiter.write_message(chat)
-            except:
-                logging.error("Error sending message", exc_info=True)
-
-    def distribute_room(self, room):
-        self.generate_new_room(room)
-        ChatSocketHandler.rooms[room]['waiters'].add(self)
-        ChatSocketHandler.socket_room_dict[self] = room
-        ChatSocketHandler.rooms['new']['waiters'].remove(self)
-
-    def on_message(self, message):
-        # print "got message {0}".format(message.encode('utf-8'))
-        parsed = tornado.escape.json_decode(message)
-        chat = {
-            "id": str(uuid.uuid4()),
-            "body": parsed["body"],
-            "timestamp": str(time.time()),
-        }
-        chat["html"] = tornado.escape.to_basestring(
-            self.render_string("message.html", message=chat))
-        room = parsed.get("room")
-        send_type = parsed.get("type", 0)
-        token = parsed.get("token", '')
-        if send_type == 1:
-            self.distribute_room(room)
-        elif send_type == 2:
-            user = session.query(User).filter(User.token == token).first()
-            if user:
-                user.active = True
-                session.commit()
-            self.write_message(json.dumps({'body': 'pong'}))
-        else:
-            ChatSocketHandler.update_cache(chat, room)
-            ChatSocketHandler.send_updates(chat, room)
 
 
 def main():
