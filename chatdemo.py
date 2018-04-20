@@ -27,13 +27,13 @@ class ChatCenter(object):
         处理websocket 服务器与客户端交互
     '''
     newer = 'newer'
-    chatRegister = {'newer': set()}
+    chat_register = {'newer': set()}
 
     def register(self, newer):
         '''
             保存新加入的客户端连接、监听实例，并向聊天室其他成员发送消息！
         '''
-        self.chatRegister[self.newer].add(newer)
+        self.chat_register[self.newer].add(newer)
         logger.info('INFO new socket connecting')
 
     def unregister(self, lefter):
@@ -41,12 +41,12 @@ class ChatCenter(object):
             客户端关闭连接，删除聊天室内对应的客户端连接实例
         '''
         room = lefter.room_id
-        self.chatRegister[room].remove(lefter)
+        self.chat_register[room].remove(lefter)
         logger.info('INFO socket close from room {0}'.format(room))
 
-    def callbackNews(self, sender, message):
+    def callback_news(self, sender, message):
         '''
-            处理客户端提交的消息，发送给对应聊天室内所有的客户端
+            处理客户端提交的消息
         '''
         parsed = tornado.escape.json_decode(message)
         chat = {
@@ -69,32 +69,32 @@ class ChatCenter(object):
             #     session.commit()
             sender.write_message(json.dumps({'body': 'pong'}))
         else:
-            self.callbackTrigger(room, chat)
+            self.callback_trigger(room, chat)
 
-    def callbackTrigger(self, home, message):
+    def callback_trigger(self, home, message):
         '''
             消息触发器，将最新消息返回给对应聊天室的所有成员
         '''
         start = time.time()
-        for callbacker in self.chatRegister[home]:
+        for callbacker in self.chat_register[home]:
             try:
                 callbacker.write_message(json.dumps(message))
             except Exception as e:
                 logger.error("ERROR IN sending message: {0}, reason {1}".format(message, e))
         end = time.time()
-        logging.info("Send message to {0} waiters, cost {1}s message: {2}".format(len(self.chatRegister[home]),
+        logging.info("Send message to {0} waiters, cost {1}s message: {2}".format(len(self.chat_register[home]),
                                                                                   (end - start) * 1000.0, message))
 
     def generate_new_room(self, room):
-        if room not in self.chatRegister:
-            self.chatRegister[room] = set()
+        if room not in self.chat_register:
+            self.chat_register[room] = set()
         return True
 
     def distribute_room(self, room, sender):
         self.generate_new_room(room)
         sender.room_id = room
-        self.chatRegister[room].add(sender)
-        self.chatRegister[self.newer].remove(sender)
+        self.chat_register[room].add(sender)
+        self.chat_register[self.newer].remove(sender)
 
 
 class Application(tornado.web.Application):
@@ -148,7 +148,7 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
 
     def on_message(self, message):
         # try:
-        self.application.chat_center.callbackNews(self, message)  # 处理客户端提交的最新消息
+        self.application.chat_center.callback_news(self, message)  # 处理客户端提交的最新消息
         # except Exception as e:
         #     logger.error('ERROR IN new message coming, message {0}, reason {1}'.format(message, e))
         #     raise e
