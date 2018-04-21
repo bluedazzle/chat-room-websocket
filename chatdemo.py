@@ -4,6 +4,8 @@ from __future__ import unicode_literals
 
 import json
 import time
+
+import redis
 import tornado.escape
 import tornado.ioloop
 import tornado.options
@@ -13,11 +15,15 @@ import os.path
 import uuid
 import logging
 
+from cache import init_redis, redis_room, ROOM_STATUS_KEY, RedisProxy, ROOM_MEMBER_KEY, ROOM_SONG_KEY, KVRedisProxy, \
+    USER_SONG_KEY
+from message import WsMessage
+
 logger = logging.getLogger(__name__)
 
 from tornado.options import define, options
 
-from models import session, User
+from db import session, Room, PartyUser
 
 define("port", default=8888, help="run on the given port", type=int)
 
@@ -28,6 +34,30 @@ class ChatCenter(object):
     '''
     newer = 'newer'
     chat_register = {'newer': set()}
+    members = None
+    songs = None
+    user = None
+    user_song = None
+
+    def __init__(self):
+        self.members = RedisProxy(redis_room, ROOM_MEMBER_KEY, ['fullname', 'nick', 'avatar'])
+        self.songs = RedisProxy(redis_room, ROOM_SONG_KEY, ['sid', 'name', 'author', 'nick', 'fullname'])
+        self.user_song = KVRedisProxy(redis_room, USER_SONG_KEY, ['sid', 'name', 'author'])
+
+    def parameter_wrapper(self, message):
+        parsed = tornado.escape.json_decode(message)
+        msg = WsMessage(parsed)
+        for k, v in parsed:
+            setattr(msg, k, v)
+        return msg
+
+    def response_wrapper(self, message):
+        chat = {
+            "id": str(uuid.uuid4()),
+            "body": message.body,
+            "timestamp": str(time.time()),
+        }
+        return chat
 
     def register(self, newer):
         '''
@@ -42,34 +72,62 @@ class ChatCenter(object):
         '''
         room = lefter.room_id
         self.chat_register[room].remove(lefter)
+        self.members.remove_member_from_set(room, self.user.fullname, self.user.nick, self.user.avatar)
+        song = self.user_song.get(self.user.fullname)
+        self.songs.remove_member_from_set(room, song.get('sid'), song.get('name'), song.get('author'), self.user.nick,
+                                          self.user.fullname)
         logger.info('INFO socket close from room {0}'.format(room))
 
     def callback_news(self, sender, message):
         '''
             处理客户端提交的消息
+            message : {
+                "action": "xx", # 路由
+                "body": "xx", # 内容
+            }
         '''
-        parsed = tornado.escape.json_decode(message)
-        chat = {
-            "id": str(uuid.uuid4()),
-            "body": parsed["body"],
-            "timestamp": str(time.time()),
-        }
-        # chat["html"] = tornado.escape.to_basestring(
-        #     self.render_string("message.html", message=chat))
-        room = parsed.get("room")
-        send_type = parsed.get("type", 0)
+        message = self.parameter_wrapper(message)
+        urls = {'join': self.distribute_room,
+                'status': self.room_info,
+                'boardcast': self.boardcast_in_room}
+        view_func = urls.get(message.action, self.boardcast_in_room)
+        view_func(sender, message)
+
+        # room = parsed.get("room")
+        # send_type = parsed.get("type", 0)
         # token = parsed.get("token", '')
-        if send_type == 1:
-            self.distribute_room(room, sender)
-            logger.info('INFO socket enter room {0}'.format(room))
-        elif send_type == 2:
-            # user = session.query(User).filter(User.token == token).first()
-            # if user:
-            #     user.active = True
-            #     session.commit()
-            sender.write_message(json.dumps({'body': 'pong'}))
-        else:
-            self.callback_trigger(room, chat)
+        # if send_type == 1:
+        #     self.distribute_room(room, sender)
+        #     logger.info('INFO socket enter room {0}'.format(room))
+        # elif send_type == 2:
+        #     user = session.query(User).filter(User.token == token).first()
+        #     if user:
+        #         user.active = True
+        #         session.commit()
+        # sender.write_message(json.dumps({'body': 'pong'}))
+        # else:
+        #     self.callback_trigger(room, chat)
+
+    # 路由 房间信息
+    def room_info(self, sender, message):
+        key = ROOM_STATUS_KEY.format(message.room)
+        result = redis_room.hgetall(key)
+        out_dict = {'room': message.room}
+        room = session.query(Room).filter(Room.room_id == message.room).first()
+        if room:
+            out_dict['name'] = room.name
+            out_dict['cover'] = room.cover
+        # todo 房间人数
+        out_dict['count'] = self.members.get_set_count(message.room)
+        out_dict['members'] = self.members.get_set_members(message.room)
+        out_dict['songs'] = self.songs.get_set_members(message.room)
+        for k, v in result.items():
+            out_dict[k] = json.loads(v)
+        sender.write_message(self.response_wrapper(message))
+
+    # 路由 广播
+    def boardcast_in_room(self, sender, message):
+        self.callback_trigger(message.room, self.response_wrapper(message))
 
     def callback_trigger(self, home, message):
         '''
@@ -90,11 +148,16 @@ class ChatCenter(object):
             self.chat_register[room] = set()
         return True
 
-    def distribute_room(self, room, sender):
-        self.generate_new_room(room)
-        sender.room_id = room
-        self.chat_register[room].add(sender)
-        self.chat_register[self.newer].remove(sender)
+    def distribute_room(self, sender, message):
+        self.generate_new_room(message.room)
+        sender.room_id = message.room
+        sender.token = message.token
+        user = session.query(PartyUser).filter(PartyUser.token == message.token).first()
+        if user:
+            sender.user = user
+            self.chat_register[message.room].add(sender)
+            self.chat_register[self.newer].remove(sender)
+            self.members.create_update_set(message.room, user.fullname, user.nick, user.avatar)
 
 
 class Application(tornado.web.Application):
@@ -130,6 +193,7 @@ class MainHandler(tornado.web.RequestHandler):
 class ChatSocketHandler(tornado.websocket.WebSocketHandler):
     def __init__(self, application, request, **kwargs):
         self.room_id = None
+        self.token = None
         super(ChatSocketHandler, self).__init__(application, request, **kwargs)
 
     def open(self):
@@ -159,6 +223,7 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
 
 
 def main():
+    init_redis()
     tornado.options.parse_command_line()
     app = Application()
     app.listen(options.port)
