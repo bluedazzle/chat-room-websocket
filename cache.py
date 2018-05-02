@@ -2,6 +2,7 @@
 from __future__ import unicode_literals
 
 import redis
+import time
 
 redis_room = None
 redis_common = None
@@ -10,6 +11,9 @@ ROOM_MEMBER_KEY = 'ROOM_MEMBER_{0}'
 ROOM_SONG_KEY = 'ROOM_SONG_{0}'
 ROOM_STATUS_KEY = 'ROOM_STATUS_{0}'
 USER_SONG_KEY = 'USER_SONG_{0}'
+
+TIME_REST = 30
+TIME_ASK = 15
 
 
 def init_redis_room():
@@ -86,6 +90,62 @@ class KVRedisProxy(RedisProxy):
         self.decode_value(result)
 
 
+class HashRedisProxy(RedisProxy):
+    # def __init__(self):
+    # status: 1 演唱中 2 上麦询问中 3 休息中
+    status = {'status': 1, "start_time": 0, "end_time": 0, "current_time": 0, "duration": 0}
+    reset_song = {'sid': 0, 'name': '', 'author': '', 'nick': '', 'fullname': ''}
+
+    def generate_time_tuple(self, duration):
+        time_tuple = {}
+        start_time = int(time.time())
+        time_tuple['start_time'] = start_time
+        time_tuple['end_time'] = start_time + duration
+        time_tuple['current_time'] = start_time
+        return time_tuple
+
+    def set_song(self, key, song):
+        """
+        song {'sid', 'name', 'author', 'nick', 'fullname'}
+        """
+        duration = song.get("duration", 0)
+        time_dict = self.generate_time_tuple(duration)
+        self.status.update(time_dict)
+        self.status.update(song)
+        self.set(key, **self.status)
+        return self.status
+
+    def set_rest(self, key):
+        time_dict = self.generate_time_tuple(TIME_REST)
+        self.status.update(time_dict)
+        self.status.update(self.reset_song)
+        self.status['status'] = 3
+        self.status['duration'] = TIME_REST
+        self.set(key, **self.status)
+        return self.status
+
+    def set_ask(self, key, fullname):
+        time_dict = self.generate_time_tuple(TIME_ASK)
+        self.status.update(time_dict)
+        self.status.update(self.reset_song)
+        self.status['fullname'] = fullname
+        self.status['status'] = 2
+        self.status['duration'] = TIME_ASK
+        self.set(key, **self.status)
+        return self.status
+
+    def set(self, key, **kwargs):
+        key = self.base_key.format(key)
+        self.redis.hmset(key, kwargs)
+
+    def get(self, key):
+        now = int(time.time())
+        key = self.base_key.format(key)
+        result = self.redis.hgetall(key)
+        result['current_time'] = now
+        return result
+
+
 if __name__ == '__main__':
     init_redis()
     rmp = RedisProxy(redis_room, ROOM_MEMBER_KEY, ['fullname', 'nick', 'avatar'])
@@ -110,3 +170,15 @@ if __name__ == '__main__':
 
     rms.remove_member_from_set('test', '123', 'test_song_name', 'test_author', 'test_nick')
     print rms.get_set_members('test')
+
+    print '==================test room status ======================='
+    hrp = HashRedisProxy(redis_room, ROOM_STATUS_KEY)
+    print hrp.set_song('test', {'sid': 1, 'name': 'test_name', 'author': 'test_author', 'nick': 'test_nick',
+                                'fullname': 'test_fullname', 'duration': 100})
+    print hrp.get('test')
+    print hrp.set_rest('test')
+    print hrp.get('test')
+    print hrp.set_ask('test', 'test_fullname1')
+    print hrp.get('test')
+    time.sleep(2)
+    print hrp.get('test')
