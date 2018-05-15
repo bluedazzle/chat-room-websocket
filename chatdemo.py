@@ -16,7 +16,9 @@ import uuid
 import logging
 
 from cache import init_redis, redis_room, ROOM_STATUS_KEY, RedisProxy, ROOM_MEMBER_KEY, ROOM_SONG_KEY, KVRedisProxy, \
-    USER_SONG_KEY
+    USER_SONG_KEY, HashRedisProxy, ListRedisProxy, TIME_ASK, TIME_REST
+from celery_tasks import singing_callback, ask_callback, rest_callback
+from const import RoomStatus
 from message import WsMessage
 
 logger = logging.getLogger(__name__)
@@ -38,11 +40,13 @@ class ChatCenter(object):
     songs = None
     user = None
     user_song = None
+    room = None
 
     def __init__(self):
         self.members = RedisProxy(redis_room, ROOM_MEMBER_KEY, ['fullname', 'nick', 'avatar'])
-        self.songs = RedisProxy(redis_room, ROOM_SONG_KEY, ['sid', 'name', 'author', 'nick', 'fullname'])
-        self.user_song = KVRedisProxy(redis_room, USER_SONG_KEY, ['sid', 'name', 'author'])
+        self.songs = ListRedisProxy(redis_room, ROOM_SONG_KEY, 'fullname', ['sid', 'name', 'author', 'nick', 'fullname'])
+        self.user_song = RedisProxy(redis_room, USER_SONG_KEY, ['fullname'])
+        self.room = HashRedisProxy(redis_room, ROOM_STATUS_KEY)
 
     def parameter_wrapper(self, message):
         parsed = tornado.escape.json_decode(message)
@@ -51,10 +55,16 @@ class ChatCenter(object):
             setattr(msg, k, v)
         return msg
 
+    @staticmethod
+    def get_now_end_time(duration):
+        now = int(time.time())
+        return now + duration
+
     def response_wrapper(self, message):
         chat = {
-            "id": str(uuid.uuid4()),
-            "body": message.body,
+            # "id": str(uuid.uuid4()),
+            "status": 0,
+            "body": message,
             "timestamp": str(time.time()),
         }
         return chat
@@ -73,9 +83,18 @@ class ChatCenter(object):
         room = lefter.room_id
         self.chat_register[room].remove(lefter)
         self.members.remove_member_from_set(room, self.user.fullname, self.user.nick, self.user.avatar)
-        song = self.user_song.get(self.user.fullname)
-        self.songs.remove_member_from_set(room, song.get('sid'), song.get('name'), song.get('author'), self.user.nick,
-                                          self.user.fullname)
+        # 检查是否排麦
+        if self.user_song.exist(room, self.user.fullname):
+            index = self.songs.search(room, self.user.fullname)
+            if index > -1:
+                self.songs.remove(room, index)
+            self.user_song.remove_member_from_set(room, self.user.fullname)
+        # 检查是否正在演唱
+        room_status = self.room.get(room)
+        status = room_status.get('status')
+        if status == RoomStatus.singing and room_status.get('fullname') == self.user.fullname:
+            self.room.set_rest(room)
+            self.boardcast_in_room(None, room_status)
         logger.info('INFO socket close from room {0}'.format(room))
 
     def callback_news(self, sender, message):
@@ -84,11 +103,15 @@ class ChatCenter(object):
             message : {
                 "action": "xx", # 路由
                 "body": "xx", # 内容
+                "fullname": 'xx',
+                "token": "xx"
             }
         '''
         message = self.parameter_wrapper(message)
         urls = {'join': self.distribute_room,
                 'status': self.room_info,
+                'ask': self.ask_singing,
+                'cut': self.cut_song,
                 'boardcast': self.boardcast_in_room}
         view_func = urls.get(message.action, self.boardcast_in_room)
         view_func(sender, message)
@@ -129,6 +152,35 @@ class ChatCenter(object):
     def boardcast_in_room(self, sender, message):
         self.callback_trigger(message.room, self.response_wrapper(message))
 
+    def ask_singing(self, sender, message):
+        body = message.body
+        ack = body.get('ack', 0)
+        song = self.songs.get(message.room)
+        if song.get('fullname') != message.fullname:
+            # sender.write_message()
+            return
+        song = self.songs.pop(message.room)
+        if ack:
+            res = self.room.set_song(message.room, song)
+            # 广播房间状态
+            self.boardcast_in_room(sender, res)
+            # 歌曲完成回调
+            singing_callback.apply_async((message.room, song.get('end_time')), countdown=song.get('duration'))
+        else:
+            song = self.songs.get(message.room)
+            res = self.room.set_ask(message.room, song.get('fullname'), song.get('name'))
+            self.boardcast_in_room(sender, res)
+            ask_callback.apply_async((message.room, self.get_now_end_time(TIME_ASK)), countdown=TIME_ASK)
+
+    def cut_song(self, sender, message):
+        room_status = self.room.get(message.room)
+        if room_status.get('status') != RoomStatus.singing:
+            return
+        if room_status.get('fullname') == message.fullname:
+            res = self.room.set_rest(message.room)
+            self.boardcast_in_room(sender, res)
+            rest_callback.apply_async((message.room, self.get_now_end_time(TIME_REST)), countdown=TIME_REST)
+
     def callback_trigger(self, home, message):
         '''
             消息触发器，将最新消息返回给对应聊天室的所有成员
@@ -146,6 +198,7 @@ class ChatCenter(object):
     def generate_new_room(self, room):
         if room not in self.chat_register:
             self.chat_register[room] = set()
+            self.room.set_rest(room, True)
         return True
 
     def distribute_room(self, sender, message):
