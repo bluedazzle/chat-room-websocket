@@ -15,7 +15,7 @@ import os.path
 import uuid
 import logging
 
-from cache import init_redis, redis_room, ROOM_STATUS_KEY, RedisProxy, ROOM_MEMBER_KEY, ROOM_SONG_KEY, KVRedisProxy, \
+from cache import init_redis, ROOM_STATUS_KEY, RedisProxy, ROOM_MEMBER_KEY, ROOM_SONG_KEY, KVRedisProxy, \
     USER_SONG_KEY, HashRedisProxy, ListRedisProxy, TIME_ASK, TIME_REST
 from celery_tasks import singing_callback, ask_callback, rest_callback
 from const import RoomStatus
@@ -29,6 +29,8 @@ from tornado.gen import coroutine, sleep
 from db import session, Room, PartyUser
 
 define("port", default=8888, help="run on the given port", type=int)
+
+redis_room = None
 
 
 class ChatCenter(object):
@@ -51,8 +53,9 @@ class ChatCenter(object):
 
     def parameter_wrapper(self, message):
         parsed = tornado.escape.json_decode(message)
+        print parsed
         msg = WsMessage(parsed)
-        for k, v in parsed:
+        for k, v in parsed.items():
             setattr(msg, k, v)
         return msg
 
@@ -96,9 +99,10 @@ class ChatCenter(object):
         status = room_status.get('status')
         if status == RoomStatus.singing and room_status.get('fullname') == self.user.fullname:
             self.room.set_rest(room)
-            self.boardcast_in_room(None, room_status)
+            yield self.boardcast_in_room(None, room_status)
         logger.info('INFO socket close from room {0}'.format(room))
 
+    @coroutine
     def callback_news(self, sender, message):
         '''
             处理客户端提交的消息
@@ -110,13 +114,14 @@ class ChatCenter(object):
             }
         '''
         message = self.parameter_wrapper(message)
+        logger.info('INFO recv message {0}'.format(message))
         urls = {'join': self.distribute_room,
                 'status': self.room_info,
                 'ask': self.ask_singing,
                 'cut': self.cut_song,
                 'boardcast': self.boardcast_in_room}
         view_func = urls.get(message.action, self.boardcast_in_room)
-        view_func(sender, message)
+        yield view_func(sender, message)
 
         # room = parsed.get("room")
         # send_type = parsed.get("type", 0)
@@ -134,9 +139,10 @@ class ChatCenter(object):
         #     self.callback_trigger(room, chat)
 
     # 路由 房间信息
+    @coroutine
     def room_info(self, sender, message):
         key = ROOM_STATUS_KEY.format(message.room)
-        result = redis_room.hgetall(key)
+        result = self.room.get(key)
         out_dict = {'room': message.room}
         room = session.query(Room).filter(Room.room_id == message.room).first()
         if room:
@@ -148,12 +154,14 @@ class ChatCenter(object):
         out_dict['songs'] = self.songs.get_set_members(message.room)
         for k, v in result.items():
             out_dict[k] = json.loads(v)
-        sender.write_message(self.response_wrapper(message))
+        yield sender.write_message(self.response_wrapper(message))
 
     # 路由 广播
+    @coroutine
     def boardcast_in_room(self, sender, message):
-        self.callback_trigger(message.room, self.response_wrapper(message))
+        yield self.callback_trigger(message.room, self.response_wrapper(message))
 
+    @coroutine
     def ask_singing(self, sender, message):
         body = message.body
         ack = body.get('ack', 0)
@@ -165,24 +173,26 @@ class ChatCenter(object):
         if ack:
             res = self.room.set_song(message.room, song)
             # 广播房间状态
-            self.boardcast_in_room(sender, res)
+            yield self.boardcast_in_room(sender, res)
             # 歌曲完成回调
             singing_callback.apply_async((message.room, song.get('end_time')), countdown=song.get('duration'))
         else:
             song = self.songs.get(message.room)
             res = self.room.set_ask(message.room, song.get('fullname'), song.get('name'))
-            self.boardcast_in_room(sender, res)
+            yield self.boardcast_in_room(sender, res)
             ask_callback.apply_async((message.room, self.get_now_end_time(TIME_ASK)), countdown=TIME_ASK)
 
+    @coroutine
     def cut_song(self, sender, message):
         room_status = self.room.get(message.room)
         if room_status.get('status') != RoomStatus.singing:
             return
         if room_status.get('fullname') == message.fullname:
             res = self.room.set_rest(message.room)
-            self.boardcast_in_room(sender, res)
+            yield self.boardcast_in_room(sender, res)
             rest_callback.apply_async((message.room, self.get_now_end_time(TIME_REST)), countdown=TIME_REST)
 
+    @coroutine
     def callback_trigger(self, home, message):
         '''
             消息触发器，将最新消息返回给对应聊天室的所有成员
@@ -190,21 +200,23 @@ class ChatCenter(object):
         start = time.time()
         for callbacker in self.chat_register[home]:
             try:
-                callbacker.write_message(json.dumps(message))
+                yield callbacker.write_message(json.dumps(message))
             except Exception as e:
                 logger.error("ERROR IN sending message: {0}, reason {1}".format(message, e))
         end = time.time()
         logging.info("Send message to {0} waiters, cost {1}s message: {2}".format(len(self.chat_register[home]),
-                                                                                  (end - start) * 1000.0, message))
+                                                                                      (end - start) * 1000.0, message))
 
+    @coroutine
     def generate_new_room(self, room):
         if room not in self.chat_register:
             self.chat_register[room] = set()
             self.room.set_rest(room, True)
         return True
 
+    @coroutine
     def distribute_room(self, sender, message):
-        self.generate_new_room(message.room)
+        yield self.generate_new_room(message.room)
         sender.room_id = message.room
         sender.token = message.token
         user = session.query(PartyUser).filter(PartyUser.token == message.token).first()
@@ -254,7 +266,7 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
     @coroutine
     def open(self):
         # try:
-        self.application.chat_center.register(self)  # 记录客户端连接
+        yield self.application.chat_center.register(self)  # 记录客户端连接
         # except Exception as e:
         #     logger.error('ERROR IN init web socket , reason {0}'.format(e))
         #     raise e
@@ -262,7 +274,7 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
     @coroutine
     def on_close(self):
         try:
-            self.application.chat_center.unregister(self)  # 删除客户端连接
+            yield self.application.chat_center.unregister(self)  # 删除客户端连接
         except Exception as e:
             logger.error('ERROR IN close web socket, reason {0}'.format(e))
             raise e
@@ -270,7 +282,7 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
     @coroutine
     def on_message(self, message):
         # try:
-        self.application.chat_center.callback_news(self, message)  # 处理客户端提交的最新消息
+        yield self.application.chat_center.callback_news(self, message)  # 处理客户端提交的最新消息
         # except Exception as e:
         #     logger.error('ERROR IN new message coming, message {0}, reason {1}'.format(message, e))
         #     raise e
@@ -281,7 +293,9 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
 
 
 def main():
+    global redis_room
     init_redis()
+    redis_room = redis.StrictRedis(host='localhost', port=6379, db=5)
     tornado.options.parse_command_line()
     app = Application()
     app.listen(options.port)

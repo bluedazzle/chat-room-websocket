@@ -9,7 +9,7 @@ Base = declarative_base()
 
 
 class PartyUser(Base):
-    __tablename__ = 'core_party_user'
+    __tablename__ = 'core_partyuser'
 
     id = Column(Integer, primary_key=True)
     create_time = Column(DateTime)
@@ -26,6 +26,7 @@ class Room(Base):
     __tablename__ = 'core_room'
 
     id = Column(Integer, primary_key=True)
+    room_id = Column(String)
     create_time = Column(DateTime)
     modify_time = Column(DateTime)
     name = Column(String)
@@ -34,7 +35,7 @@ class Room(Base):
     cover = Column(String)
 
 
-engine = create_engine('postgresql+psycopg2://rapospectre:123456qq@localhost:5432/ktv',
+engine = create_engine('postgresql+psycopg2://postgres:@localhost:5432/ktv',
                        encoding='utf-8'.encode())
 
 DBSession = sessionmaker(bind=engine)

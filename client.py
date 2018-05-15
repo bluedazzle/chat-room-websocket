@@ -78,6 +78,16 @@ class Communicator(object):
         try:
             # websocket_connect(SERVER_URL, on_message_callback=self.on_recv_msg)
             self._websocket_client = yield websocket_connect(SERVER_URL, on_message_callback=self.on_recv_msg)
+            data = {
+                "action": "join",
+                "body": "xx",
+                "fullname": '15608059720',
+                "token": "123",
+                'room': 'R123'
+            }
+            self.send_data(json.dumps(data))
+            data['action'] = 'status'
+            self.send_data(json.dumps(data))
             logging.info("connect server success:%s", SERVER_URL)
         except Exception as err_info:
             logging.error("start device controller failed: %s", err_info)
@@ -101,4 +111,6 @@ if __name__ == '__main__':
     io_loop = IOLoop.instance()
     ws = Communicator()
     ws.start()
+    print '1'
     io_loop.start()
+    print '2'

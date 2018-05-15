@@ -54,6 +54,7 @@ class RedisProxy(object):
             return {}
         value_list = itm.split('|')
         value_dict = {}
+        print value_list, self.props
         for index, value in enumerate(value_list):
             value_dict[self.props[index]] = value
         return value_dict
