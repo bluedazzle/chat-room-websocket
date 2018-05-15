@@ -24,6 +24,7 @@ from message import WsMessage
 logger = logging.getLogger(__name__)
 
 from tornado.options import define, options
+from tornado.gen import coroutine, sleep
 
 from db import session, Room, PartyUser
 
@@ -76,6 +77,7 @@ class ChatCenter(object):
         self.chat_register[self.newer].add(newer)
         logger.info('INFO new socket connecting')
 
+    @coroutine
     def unregister(self, lefter):
         '''
             客户端关闭连接，删除聊天室内对应的客户端连接实例
@@ -140,7 +142,7 @@ class ChatCenter(object):
         if room:
             out_dict['name'] = room.name
             out_dict['cover'] = room.cover
-        # todo 房间人数
+        # 房间人数
         out_dict['count'] = self.members.get_set_count(message.room)
         out_dict['members'] = self.members.get_set_members(message.room)
         out_dict['songs'] = self.songs.get_set_members(message.room)
@@ -249,6 +251,7 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
         self.token = None
         super(ChatSocketHandler, self).__init__(application, request, **kwargs)
 
+    @coroutine
     def open(self):
         # try:
         self.application.chat_center.register(self)  # 记录客户端连接
@@ -256,6 +259,7 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
         #     logger.error('ERROR IN init web socket , reason {0}'.format(e))
         #     raise e
 
+    @coroutine
     def on_close(self):
         try:
             self.application.chat_center.unregister(self)  # 删除客户端连接
@@ -263,6 +267,7 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
             logger.error('ERROR IN close web socket, reason {0}'.format(e))
             raise e
 
+    @coroutine
     def on_message(self, message):
         # try:
         self.application.chat_center.callback_news(self, message)  # 处理客户端提交的最新消息
