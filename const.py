@@ -2,6 +2,9 @@
 # from __future__ import unicode_literals
 
 
+STATUS_SUCCESS = 0
+STATUS_ERROR = -1
+
 class ChoiceBase(object):
     __choices__ = ()
 

@@ -18,7 +18,7 @@ import logging
 from cache import init_redis, ROOM_STATUS_KEY, RedisProxy, ROOM_MEMBER_KEY, ROOM_SONG_KEY, KVRedisProxy, \
     USER_SONG_KEY, HashRedisProxy, ListRedisProxy, TIME_ASK, TIME_REST
 from celery_tasks import singing_callback, ask_callback, rest_callback
-from const import RoomStatus
+from const import RoomStatus, STATUS_ERROR, STATUS_SUCCESS
 from message import WsMessage
 
 logger = logging.getLogger(__name__)
@@ -46,14 +46,13 @@ class ChatCenter(object):
     room = None
 
     def __init__(self):
-        self.members = RedisProxy(redis_room, ROOM_MEMBER_KEY, ['fullname', 'nick', 'avatar'])
+        self.members = RedisProxy(redis_room, ROOM_MEMBER_KEY, 'fullname', ['fullname', 'nick', 'avatar'])
         self.songs = ListRedisProxy(redis_room, ROOM_SONG_KEY, 'fullname', ['sid', 'name', 'author', 'nick', 'fullname'])
-        self.user_song = RedisProxy(redis_room, USER_SONG_KEY, ['fullname'])
+        self.user_song = RedisProxy(redis_room, USER_SONG_KEY, 'fullname', ['fullname'])
         self.room = HashRedisProxy(redis_room, ROOM_STATUS_KEY)
 
     def parameter_wrapper(self, message):
         parsed = tornado.escape.json_decode(message)
-        print parsed
         msg = WsMessage(parsed)
         for k, v in parsed.items():
             setattr(msg, k, v)
@@ -64,11 +63,12 @@ class ChatCenter(object):
         now = int(time.time())
         return now + duration
 
-    def response_wrapper(self, message):
+    def response_wrapper(self, message, status=STATUS_SUCCESS):
         chat = {
             # "id": str(uuid.uuid4()),
-            "status": 0,
+            "status": status,
             "body": message,
+            "message": 'success',
             "timestamp": str(time.time()),
         }
         return chat
@@ -80,27 +80,31 @@ class ChatCenter(object):
         self.chat_register[self.newer].add(newer)
         logger.info('INFO new socket connecting')
 
-    @coroutine
     def unregister(self, lefter):
         '''
             客户端关闭连接，删除聊天室内对应的客户端连接实例
         '''
         room = lefter.room_id
-        self.chat_register[room].remove(lefter)
-        self.members.remove_member_from_set(room, self.user.fullname, self.user.nick, self.user.avatar)
+        if not lefter.user:
+            self.chat_register[self.newer].remove(lefter)
+            logger.info('INFO socket close from room {0}'.format(self.newer))
+            return
+        self.members.remove_member_from_set(room, lefter.user.fullname, lefter.user.nick, lefter.user.avatar)
         # 检查是否排麦
-        if self.user_song.exist(room, self.user.fullname):
-            index = self.songs.search(room, self.user.fullname)
+        if self.user_song.exist(room, lefter.user.fullname):
+            index = self.songs.search(room, lefter.user.fullname)
             if index > -1:
                 self.songs.remove(room, index)
-            self.user_song.remove_member_from_set(room, self.user.fullname)
+            self.user_song.remove_member_from_set(room, lefter.user.fullname)
         # 检查是否正在演唱
-        room_status = self.room.get(room)
+        room_status = self.get_room_info(room)
         status = room_status.get('status')
-        if status == RoomStatus.singing and room_status.get('fullname') == self.user.fullname:
+        if status == RoomStatus.singing and room_status.get('fullname') == lefter.user.fullname:
             self.room.set_rest(room)
-            yield self.boardcast_in_room(None, room_status)
-        logger.info('INFO socket close from room {0}'.format(room))
+            # self.boardcast_in_room(None, room_status)
+        self.chat_register[room].remove(lefter)
+        self.boardcast_in_room(None, room_status)
+        logger.info('INFO socket {0} close from room {1}'.format(lefter.user.fullname, room))
 
     @coroutine
     def callback_news(self, sender, message):
@@ -138,28 +142,31 @@ class ChatCenter(object):
         # else:
         #     self.callback_trigger(room, chat)
 
+    def get_room_info(self, room):
+        result = self.room.get(room)
+        out_dict = {'room': room}
+        room_obj = session.query(Room).filter(Room.room_id == room).first()
+        if room_obj:
+            out_dict['name'] = room_obj.name
+            out_dict['cover'] = room_obj.cover
+        # 房间人数
+        out_dict['count'] = self.members.get_set_count(room)
+        out_dict['members'] = self.members.get_set_members(room)
+        out_dict['songs'] = self.songs.get_set_members(room)
+        for k, v in result.items():
+            out_dict[k] = v
+        return out_dict
+
     # 路由 房间信息
     @coroutine
     def room_info(self, sender, message):
-        key = ROOM_STATUS_KEY.format(message.room)
-        result = self.room.get(key)
-        out_dict = {'room': message.room}
-        room = session.query(Room).filter(Room.room_id == message.room).first()
-        if room:
-            out_dict['name'] = room.name
-            out_dict['cover'] = room.cover
-        # 房间人数
-        out_dict['count'] = self.members.get_set_count(message.room)
-        out_dict['members'] = self.members.get_set_members(message.room)
-        out_dict['songs'] = self.songs.get_set_members(message.room)
-        for k, v in result.items():
-            out_dict[k] = json.loads(v)
-        yield sender.write_message(self.response_wrapper(message))
+        msg = self.get_room_info(message.room)
+        yield sender.write_message(self.response_wrapper(msg))
 
     # 路由 广播
     @coroutine
     def boardcast_in_room(self, sender, message):
-        yield self.callback_trigger(message.room, self.response_wrapper(message))
+        yield self.callback_trigger(message.get('room'), self.response_wrapper(message))
 
     @coroutine
     def ask_singing(self, sender, message):
@@ -225,6 +232,11 @@ class ChatCenter(object):
             self.chat_register[message.room].add(sender)
             self.chat_register[self.newer].remove(sender)
             self.members.create_update_set(message.room, user.fullname, user.nick, user.avatar)
+            # sender.write_message(self.response_wrapper({}))
+            res = self.get_room_info(message.room)
+            yield self.boardcast_in_room(sender, res)
+            return
+        sender.write_message(self.response_wrapper({}, STATUS_ERROR))
 
 
 class Application(tornado.web.Application):
@@ -273,11 +285,11 @@ class ChatSocketHandler(tornado.websocket.WebSocketHandler):
 
     @coroutine
     def on_close(self):
-        try:
-            yield self.application.chat_center.unregister(self)  # 删除客户端连接
-        except Exception as e:
-            logger.error('ERROR IN close web socket, reason {0}'.format(e))
-            raise e
+        # try:
+        yield self.application.chat_center.unregister(self)  # 删除客户端连接
+        # except Exception as e:
+        #     logger.error('ERROR IN close web socket, reason {0}'.format(e))
+        #     raise e
 
     @coroutine
     def on_message(self, message):

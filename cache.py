@@ -52,9 +52,8 @@ class RedisProxy(object):
     def decode_value(self, itm):
         if not itm:
             return {}
-        value_list = itm.split('|')
+        value_list = itm.decode('utf-8').split('|')
         value_dict = {}
-        print value_list, self.props
         for index, value in enumerate(value_list):
             value_dict[self.props[index]] = value
         return value_dict
@@ -224,9 +223,10 @@ class HashRedisProxy(RedisProxy):
 
     def get(self, key):
         now = int(time.time())
-        key = self.base_key.format(key)
-        result = self.redis.hgetall(key)
+        redis_key = self.base_key.format(key)
+        result = self.redis.hgetall(redis_key)
         result['current_time'] = now
+        result['room'] = key
         return result
 
 

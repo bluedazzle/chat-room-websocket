@@ -32,18 +32,20 @@ $(document).ready(function() {
 
 function newMessage(form) {
     var message = form.formToDict();
-    updater.socket.send(JSON.stringify(message));
+    updater.socket.send(message);
     form.find("input[type=text]").val("").select();
 }
 
 jQuery.fn.formToDict = function() {
     var fields = this.serializeArray();
-    var json = {};
+    // var json = {};
     for (var i = 0; i < fields.length; i++) {
-        json[fields[i].name] = fields[i].value;
+        if(fields[i].name == 'body'){
+            return fields[i].value;
+        }
     }
-    if (json.next) delete json.next;
-    return json;
+    // if (json.next) delete json.next;
+    // return json;
 };
 
 var updater = {

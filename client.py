@@ -81,8 +81,8 @@ class Communicator(object):
             data = {
                 "action": "join",
                 "body": "xx",
-                "fullname": '15608059720',
-                "token": "123",
+                "fullname": '13888888888',
+                "token": "13888888888",
                 'room': 'R123'
             }
             self.send_data(json.dumps(data))
@@ -108,9 +108,8 @@ class Communicator(object):
 
 
 if __name__ == '__main__':
+    init_logging()
     io_loop = IOLoop.instance()
     ws = Communicator()
     ws.start()
-    print '1'
     io_loop.start()
-    print '2'
